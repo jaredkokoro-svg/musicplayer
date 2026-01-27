@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 
-// Lista de espejos (Mirrors) de Piped. Si uno falla, usamos el otro.
+// LISTA ACTUALIZADA Y EXTENDIDA (Enero 2026)
 const PIPED_SERVERS = [
-  'https://api.piped.io',             // Oficial (a veces lento)
-  'https://pipedapi.kavin.rocks',     // Popular
-  'https://api.onionpiped.com',       // Alternativa
-  'https://pipedapi.drgns.space',     // Alternativa 2
+  'https://pipedapi.kavin.rocks',      // Clásico
+  'https://api.piped.io',              // Oficial
+  'https://piped-api.garudalinux.org', // Muy estable (Garuda)
+  'https://pipedapi.drgns.space',      // Alternativo rápido
+  'https://pa.il.ax',                  // Mirror Israel
+  'https://p.euten.eu',                // Mirror Europa
+  'https://api.onionpiped.com'         // Respaldo
 ];
 
 export async function GET(request: Request) {
@@ -14,33 +17,37 @@ export async function GET(request: Request) {
   
   if (!query) return NextResponse.json([]);
 
-  // Bucle para probar servidores hasta que uno funcione
+  // Probamos uno por uno
   for (const apiUrl of PIPED_SERVERS) {
     try {
-      console.log(`Intentando conectar con: ${apiUrl}`);
-      
+      // Usamos un Controller para matar la petición si tarda más de 3 segundos
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+
       const res = await fetch(`${apiUrl}/search?q=${encodeURIComponent(query)}&filter=all`, {
+        signal: controller.signal,
         headers: {
-          // TRUCO: Fingimos ser un navegador real para evitar bloqueos
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
       });
       
-      if (!res.ok) throw new Error(`Error ${res.status}`);
+      clearTimeout(timeoutId); // Limpiamos el timer si respondió a tiempo
+
+      if (!res.ok) throw new Error(`Status ${res.status}`);
 
       const data = await res.json();
-      // Filtramos solo videos (streams)
       const items = data.items.filter((item: any) => item.type === 'stream');
       
-      // Si tuvimos éxito, devolvemos los datos y salimos del bucle
-      return NextResponse.json(items);
-      
+      if (items.length > 0) {
+        return NextResponse.json(items);
+      }
+      // Si no devolvió nada, probamos el siguiente...
+
     } catch (error) {
-      console.error(`Fallo servidor ${apiUrl}, probando el siguiente...`);
-      // Continuamos al siguiente servidor del array...
+      // Silenciosamente fallamos y pasamos al siguiente servidor
+      continue;
     }
   }
 
-  // Si todos fallan
-  return NextResponse.json({ error: 'Todos los servidores fallaron' }, { status: 500 });
+  return NextResponse.json({ error: 'Todos los servidores fallaron o bloquearon la IP' }, { status: 500 });
 }
