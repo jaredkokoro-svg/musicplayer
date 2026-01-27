@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 
-const PIPED_SERVERS = [
-  'https://piped-api.garudalinux.org', // Ponemos el de Garuda primero aquí
-  'https://api.piped.io',
+const INSTANCES = [
+  'https://inv.tux.pizza',
+  'https://vid.puffyan.us',
+  'https://invidious.projectsegfau.lt',
+  'https://inv.us.projectsegfau.lt',
   'https://pipedapi.kavin.rocks',
-  'https://pipedapi.drgns.space',
-  'https://pa.il.ax',
-  'https://p.euten.eu'
+  'https://api.piped.io',
 ];
 
 export async function GET(request: Request) {
@@ -15,39 +15,58 @@ export async function GET(request: Request) {
 
   if (!id) return NextResponse.json({ error: 'Falta ID' }, { status: 400 });
 
-  for (const apiUrl of PIPED_SERVERS) {
+  for (const domain of INSTANCES) {
     try {
-      // Timeout de 4 segundos para el detalle del video
+      const isInvidious = !domain.includes('piped');
+      const url = isInvidious 
+        ? `${domain}/api/v1/videos/${id}`
+        : `${domain}/streams/${id}`;
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-      const res = await fetch(`${apiUrl}/streams/${id}`, {
+      const res = await fetch(url, { 
         signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
+        headers: { 'User-Agent': 'Mozilla/5.0' } 
       });
-      
       clearTimeout(timeoutId);
 
-      if (!res.ok) throw new Error('Fallo fetch');
+      if (!res.ok) continue;
 
       const data = await res.json();
-      
-      // Buscamos audio
-      const audioStream = data.audioStreams.find((s: any) => s.quality === 'highest' || s.bitrate > 128000) 
-                       || data.audioStreams[0];
+      let audioUrl = '';
 
-      if (!audioStream) continue; // Si este servidor no dio audio, probamos el siguiente
+      if (isInvidious) {
+        // Lógica para Invidious: Buscar formatStreams (audio+video) o adaptiveFormats (solo audio)
+        // Intentamos buscar "audio/mp4" o "audio/webm"
+        const adaptive = data.adaptiveFormats || [];
+        const audioOnly = adaptive.find((s: any) => s.type.includes('audio/mp4')) 
+                       || adaptive.find((s: any) => s.type.includes('audio'));
+        
+        audioUrl = audioOnly?.url;
+        
+        // Si no hay audio separado, usaremos el stream normal (mp4 video) pero el tag <audio> solo reproducirá el sonido
+        if (!audioUrl && data.formatStreams) {
+           audioUrl = data.formatStreams[data.formatStreams.length - 1].url;
+        }
 
-      return NextResponse.json({
-        url: audioStream.url,
-        title: data.title,
-        uploader: data.uploader,
-        thumbnail: data.thumbnailUrl
-      });
-      
-    } catch (error) {
+      } else {
+        // Lógica para Piped
+        const audioStream = data.audioStreams.find((s: any) => s.quality === 'highest' || s.bitrate > 128000) 
+                         || data.audioStreams[0];
+        audioUrl = audioStream?.url;
+      }
+
+      if (audioUrl) {
+        return NextResponse.json({
+          url: audioUrl,
+          title: data.title,
+          uploader: isInvidious ? data.author : data.uploader,
+          thumbnail: isInvidious ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : data.thumbnailUrl
+        });
+      }
+
+    } catch (e) {
       continue;
     }
   }
