@@ -2,192 +2,146 @@
 
 import { useState, useRef } from 'react';
 import { searchMusic, getAudioUrl } from './lib/music';
-import { Search, Play, Pause, Volume2, Activity, Music } from 'lucide-react';
+import { Play, Pause, Square, Activity, Terminal } from 'lucide-react';
 
-export default function MusicPlayer() {
+export default function AudioDebugger() {
   const [query, setQuery] = useState('');
+  const [logs, setLogs] = useState<string[]>(['> System initialized.', '> Waiting for input...']);
   const [results, setResults] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  
-  // Estado del Reproductor
   const [currentTrack, setCurrentTrack] = useState<any>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [streamUrl, setStreamUrl] = useState('');
   
   const audioRef = useRef<HTMLAudioElement>(null);
+
+  const addLog = (msg: string) => setLogs(prev => [`> ${msg}`, ...prev.slice(0, 5)]);
 
   const handleSearch = async (e: any) => {
     e.preventDefault();
     if (!query) return;
-    setLoading(true);
-    setResults([]); // Limpiar anteriores
-    
+    addLog(`Fetching data for query: "${query}"...`);
     const music = await searchMusic(query);
     setResults(music);
-    setLoading(false);
+    addLog(`Received ${music.length} data points.`);
   };
 
-  const playSong = async (item: any) => {
-    // 1. UI Optimista: Mostramos que cargando
+  const playTest = async (item: any) => {
+    addLog(`Buffer requested for ID: ${item.url.split('v=')[1]}`);
     setCurrentTrack(item);
     setIsPlaying(false); 
     
-    // 2. Extraemos el ID (Funciona igual con Saavn porque formateamos la URL en la API)
     try {
       const videoId = item.url.split('v=')[1];
-      
-      // 3. Pedimos el link de audio al servidor
       const trackData = await getAudioUrl(videoId);
       
       if (trackData && trackData.url) {
-        setStreamUrl(trackData.url);
-        // Pequeño timeout para asegurar que el tag <audio> detectó el cambio de src
-        setTimeout(() => {
-          audioRef.current?.play();
+        addLog(`Stream URL resolved. Starting playback test.`);
+        if (audioRef.current) {
+          audioRef.current.src = trackData.url;
+          audioRef.current.play();
           setIsPlaying(true);
-        }, 100);
+        }
       } else {
-        alert("No se pudo cargar el audio de esta canción.");
+        addLog(`Error: Stream connection refused.`);
       }
     } catch (e) {
-      console.error("Error al reproducir", e);
+      addLog(`Critical Error: ${e}`);
     }
   };
 
-  const togglePlay = () => {
+  const toggleTest = () => {
     if (isPlaying) {
       audioRef.current?.pause();
+      addLog('Process paused.');
     } else {
       audioRef.current?.play();
+      addLog('Process resumed.');
     }
     setIsPlaying(!isPlaying);
   };
 
   return (
-    <div className="min-h-screen bg-[#121212] text-gray-300 font-sans flex flex-col">
+    <div className="min-h-screen bg-[#0d1117] text-gray-400 font-mono text-sm p-4 flex flex-col md:flex-row gap-4">
       
-      {/* 1. HEADER / BUSCADOR (Estilo Minimalista) */}
-      <div className="p-6 border-b border-white/5 bg-[#181818]">
-        <div className="max-w-4xl mx-auto flex items-center gap-4">
-          <div className="flex items-center gap-2 text-emerald-500 font-bold tracking-wider">
-            <Activity size={24} />
-            <span className="hidden md:inline">FOCUS FLOW</span>
+      {/* PANEL IZQUIERDO: CONTROLES */}
+      <div className="w-full md:w-1/3 flex flex-col gap-4">
+        <div className="border border-gray-700 rounded p-4 bg-[#161b22]">
+          <div className="flex items-center gap-2 mb-4 text-blue-400 font-bold border-b border-gray-700 pb-2">
+            <Terminal size={16} />
+            <span>DEV_AUDIO_TEST_SUITE</span>
           </div>
           
-          <form onSubmit={handleSearch} className="flex-1 relative">
+          <form onSubmit={handleSearch} className="flex gap-2 mb-4">
             <input
               type="text"
-              placeholder="Buscar canción o artista..."
-              className="w-full bg-[#0a0a0a] border border-white/10 rounded-lg py-2 pl-10 pr-4 focus:outline-none focus:border-emerald-500/50 text-sm transition text-white"
+              placeholder="Search_Parameter..."
+              className="w-full bg-[#0d1117] border border-gray-700 p-2 text-white focus:outline-none focus:border-blue-500"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <Search className="absolute left-3 top-2.5 text-gray-600" size={16} />
+            <button type="submit" className="bg-gray-700 hover:bg-gray-600 px-4 py-2 text-white rounded">EXEC</button>
           </form>
-        </div>
-      </div>
 
-      {/* 2. LISTA DE RESULTADOS */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar">
-        <div className="max-w-4xl mx-auto space-y-2">
-          {loading && <div className="text-center py-10 text-xs text-gray-500 animate-pulse">Buscando en la red...</div>}
-          
-          {!loading && results.length === 0 && query && (
-            <div className="text-center py-10 text-xs text-gray-600">
-              Usa el buscador para encontrar música.
-            </div>
-          )}
-          
-          {results.map((item) => (
-            <div 
-              key={item.url}
-              onClick={() => playSong(item)}
-              className={`
-                flex items-center gap-4 p-3 rounded-md cursor-pointer transition group
-                ${currentTrack?.url === item.url ? 'bg-white/10 border-l-2 border-emerald-500' : 'hover:bg-white/5 border-l-2 border-transparent'}
-              `}
-            >
-              {/* Thumbnail */}
-              <div className="w-10 h-10 md:w-12 md:h-12 rounded bg-gray-800 overflow-hidden relative flex-shrink-0">
-                <img src={item.thumbnail} alt="art" className="w-full h-full object-cover opacity-80 group-hover:opacity-100" />
-                <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition">
-                  <Play size={16} fill="white" className="text-white" />
-                </div>
-              </div>
-              
-              {/* Info Texto */}
-              <div className="flex-1 min-w-0">
-                <h4 className={`text-sm font-medium truncate ${currentTrack?.url === item.url ? 'text-emerald-400' : 'text-gray-200'}`}>
-                  {item.title}
-                </h4>
-                <p className="text-xs text-gray-500 truncate">
-                  {item.uploaderName} {item.duration !== "0:00" && `• ${item.duration}`}
-                </p>
-              </div>
-
-              {/* Animación EQ */}
-              {currentTrack?.url === item.url && isPlaying && (
-                <div className="flex gap-0.5 items-end h-4">
-                  <span className="w-0.5 bg-emerald-500 animate-[bounce_1s_infinite] h-2"></span>
-                  <span className="w-0.5 bg-emerald-500 animate-[bounce_1.2s_infinite] h-3"></span>
-                  <span className="w-0.5 bg-emerald-500 animate-[bounce_0.8s_infinite] h-1.5"></span>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* 3. REPRODUCTOR FIJO ABAJO */}
-      {currentTrack && (
-        <div className="h-20 bg-[#181818] border-t border-white/5 px-4 md:px-8 flex items-center justify-between z-50 shadow-2xl">
-          
-          {/* Info Canción */}
-          <div className="flex items-center gap-3 w-1/3">
-            <div className={`w-12 h-12 rounded overflow-hidden flex-shrink-0 ${isPlaying ? 'animate-[spin_10s_linear_infinite]' : ''}`}>
-               {currentTrack.thumbnail ? (
-                 <img src={currentTrack.thumbnail} className="w-full h-full object-cover" />
-               ) : (
-                 <div className="w-full h-full bg-gray-700 flex items-center justify-center"><Music size={20}/></div>
-               )}
-            </div>
-            <div className="hidden md:block overflow-hidden">
-              <h4 className="text-sm text-white font-bold truncate">{currentTrack.title}</h4>
-              <p className="text-xs text-gray-500 truncate">{currentTrack.uploaderName}</p>
-            </div>
+          {/* Consola de Logs (Para que parezca trabajo) */}
+          <div className="bg-black p-2 rounded h-32 overflow-hidden text-xs text-green-500 font-mono">
+            {logs.map((log, i) => <div key={i}>{log}</div>)}
           </div>
+        </div>
 
-          {/* Controles Centrales */}
-          <div className="flex items-center gap-6 justify-center w-1/3">
-            <button 
-              onClick={togglePlay}
-              className="w-10 h-10 rounded-full bg-emerald-500 text-black flex items-center justify-center hover:scale-110 transition shadow-lg shadow-emerald-500/20"
-            >
-              {isPlaying ? <Pause size={20} fill="black" /> : <Play size={20} fill="black" className="ml-1" />}
-            </button>
-          </div>
-
-          {/* Volumen / Extra */}
-          <div className="flex items-center justify-end gap-2 w-1/3 text-gray-500">
-             <Volume2 size={18} />
-             {/* Barra de volumen visual (no funcional, solo estética minimalista) */}
-             <div className="w-16 md:w-24 h-1 bg-gray-700 rounded-full overflow-hidden">
-               <div className="w-3/4 h-full bg-gray-400"></div>
+        {/* Reproductor "Técnico" */}
+        {currentTrack && (
+          <div className="border border-gray-700 rounded p-4 bg-[#161b22]">
+             <div className="text-xs text-gray-500 mb-2">ACTIVE_STREAM_ID: {currentTrack.uploaderName}</div>
+             <div className="text-white font-bold mb-4 truncate">{currentTrack.title}</div>
+             
+             <div className="flex items-center gap-4">
+               <button onClick={toggleTest} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded">
+                 {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+               </button>
+               <div className="flex-1 h-1 bg-gray-700 rounded">
+                 <div className={`h-full bg-blue-500 ${isPlaying ? 'animate-pulse' : ''}`} style={{width: '60%'}}></div>
+               </div>
+               <Activity size={16} className={isPlaying ? "text-green-500 animate-pulse" : "text-gray-600"} />
              </div>
+             <audio ref={audioRef} onEnded={() => setIsPlaying(false)} className="hidden" />
           </div>
+        )}
+      </div>
 
-          {/* AUDIO HTML5 INVISIBLE */}
-          <audio 
-            ref={audioRef} 
-            src={streamUrl} 
-            onEnded={() => setIsPlaying(false)}
-            onError={(e) => {
-              console.log("Error de audio nativo", e);
-              setIsPlaying(false);
-            }}
-          />
+      {/* PANEL DERECHO: DATOS (RESULTADOS) */}
+      <div className="flex-1 border border-gray-700 rounded bg-[#161b22] overflow-hidden flex flex-col">
+        <div className="p-2 bg-gray-800 text-xs font-bold text-gray-300 border-b border-gray-700">
+          DATA_OUTPUT_TABLE
         </div>
-      )}
+        <div className="overflow-y-auto p-2 flex-1 custom-scrollbar">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="text-xs text-gray-500 border-b border-gray-700">
+                <th className="p-2">STATUS</th>
+                <th className="p-2">RESOURCE_NAME</th>
+                <th className="p-2">ORIGIN</th>
+                <th className="p-2">ACTION</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((item, idx) => (
+                <tr key={idx} className="border-b border-gray-700/50 hover:bg-gray-700/30 transition text-xs">
+                  <td className="p-2 text-green-500">[200 OK]</td>
+                  <td className="p-2 text-white">{item.title}</td>
+                  <td className="p-2 text-gray-500">{item.uploaderName}</td>
+                  <td className="p-2">
+                    <button 
+                      onClick={() => playTest(item)}
+                      className="text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Load_Buffer
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
     </div>
   );
