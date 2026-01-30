@@ -1,75 +1,41 @@
 import { NextResponse } from 'next/server';
 
-const INSTANCES = [
-  'https://inv.tux.pizza',
-  'https://vid.puffyan.us',
-  'https://invidious.projectsegfau.lt',
-  'https://inv.us.projectsegfau.lt',
-  'https://pipedapi.kavin.rocks',
-  'https://api.piped.io',
-];
-
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
 
   if (!id) return NextResponse.json({ error: 'Falta ID' }, { status: 400 });
 
-  for (const domain of INSTANCES) {
-    try {
-      const isInvidious = !domain.includes('piped');
-      const url = isInvidious 
-        ? `${domain}/api/v1/videos/${id}`
-        : `${domain}/streams/${id}`;
+  try {
+    // Pedimos los detalles de la canción por ID
+    const res = await fetch(`https://saavn.dev/api/songs/${id}`);
+    
+    if (!res.ok) throw new Error('Error fetch song');
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const json = await res.json();
+    
+    // A veces la API devuelve un array o un objeto data
+    const song = json.data ? json.data[0] : null;
 
-      const res = await fetch(url, { 
-        signal: controller.signal,
-        headers: { 'User-Agent': 'Mozilla/5.0' } 
-      });
-      clearTimeout(timeoutId);
+    if (!song) throw new Error('Canción no encontrada');
 
-      if (!res.ok) continue;
+    // Buscamos la calidad más alta de descarga (Download Url)
+    // El array suele ser [12kbps, 48kbps, 96kbps, 160kbps, 320kbps]
+    // Tomamos el último (mejor calidad)
+    const downloadLinks = song.downloadUrl;
+    const bestQuality = downloadLinks[downloadLinks.length - 1]?.url || downloadLinks[0]?.url;
 
-      const data = await res.json();
-      let audioUrl = '';
+    if (!bestQuality) throw new Error('No hay link de audio');
 
-      if (isInvidious) {
-        // Lógica para Invidious: Buscar formatStreams (audio+video) o adaptiveFormats (solo audio)
-        // Intentamos buscar "audio/mp4" o "audio/webm"
-        const adaptive = data.adaptiveFormats || [];
-        const audioOnly = adaptive.find((s: any) => s.type.includes('audio/mp4')) 
-                       || adaptive.find((s: any) => s.type.includes('audio'));
-        
-        audioUrl = audioOnly?.url;
-        
-        // Si no hay audio separado, usaremos el stream normal (mp4 video) pero el tag <audio> solo reproducirá el sonido
-        if (!audioUrl && data.formatStreams) {
-           audioUrl = data.formatStreams[data.formatStreams.length - 1].url;
-        }
+    return NextResponse.json({
+      url: bestQuality,
+      title: song.name,
+      uploader: song.primaryArtists,
+      thumbnail: song.image[2]?.url || song.image[0]?.url
+    });
 
-      } else {
-        // Lógica para Piped
-        const audioStream = data.audioStreams.find((s: any) => s.quality === 'highest' || s.bitrate > 128000) 
-                         || data.audioStreams[0];
-        audioUrl = audioStream?.url;
-      }
-
-      if (audioUrl) {
-        return NextResponse.json({
-          url: audioUrl,
-          title: data.title,
-          uploader: isInvidious ? data.author : data.uploader,
-          thumbnail: isInvidious ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : data.thumbnailUrl
-        });
-      }
-
-    } catch (e) {
-      continue;
-    }
+  } catch (error) {
+    console.error(error);
+    return NextResponse.json({ error: 'Fallo al obtener audio' }, { status: 500 });
   }
-
-  return NextResponse.json({ error: 'No se pudo obtener el audio' }, { status: 500 });
 }
