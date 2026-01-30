@@ -6,70 +6,79 @@ export async function GET(request: Request) {
   
   if (!query) return NextResponse.json([]);
 
-  // 1. Intentamos Saavn (Música completa)
   try {
-    const res = await fetch(`https://saavn.me/search/songs?query=${encodeURIComponent(query)}&limit=10`, {
+    // 1. OBTENER CLIENT_ID DE SOUNDCLOUD (Dinámico)
+    // Entramos a la web, buscamos el script de configuración y sacamos la ID.
+    // Esto evita que la llave caduque.
+    const homeRes = await fetch('https://soundcloud.com/discover', { 
       cache: 'no-store',
-      // @ts-ignore
-      duplex: 'half',
-      headers: {
-        // CAMBIO CLAVE: Fingimos ser un Chrome real, no Wget
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0' }
     });
-
-    if (res.ok) {
-      const json = await res.json();
-      const results = json.data?.results || json.results;
-      
-      if (results && Array.isArray(results) && results.length > 0) {
-        return NextResponse.json(results.map((song: any) => ({
-          type: 'stream',
-          url: `/watch?v=${song.id}`,
-          title: decodeHtml(song.name),
-          thumbnail: getImage(song.image),
-          uploaderName: song.primaryArtists || 'Artist',
-          source: 'Saavn'
-        })));
-      }
-    }
-  } catch (e) {
-    console.error("Saavn falló, probando backup...", e);
-  }
-
-  // 2. RESPALDO DE EMERGENCIA: iTunes API (Nunca bloquea a Vercel)
-  // Si Saavn falla, al menos mostramos resultados de iTunes.
-  // Nota: El audio de iTunes es solo preview (30s), pero confirmará que tu app funciona.
-  try {
-    const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=10`);
-    const json = await res.json();
+    const html = await homeRes.text();
+    const scriptSrc = html.match(/<script crossorigin src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+)">/)?.[1];
     
-    if (json.results) {
-      return NextResponse.json(json.results.map((song: any) => ({
-        type: 'stream',
-        // Usamos un prefijo 'itunes:' para saber en el audio route que es diferente
-        url: `/watch?v=itunes:${song.trackId}`, 
-        title: song.trackName,
-        thumbnail: song.artworkUrl100.replace('100x100', '300x300'),
-        uploaderName: song.artistName,
-        source: 'iTunes_Backup' // Para que sepas en la consola que usó el backup
-      })));
+    let clientId = '7K3O2f5l36p98r34a85b9'; // ID de respaldo por si falla el scraping
+    
+    if (scriptSrc) {
+      const jsRes = await fetch(scriptSrc);
+      const jsText = await jsRes.text();
+      const match = jsText.match(/client_id:"([^"]+)"/);
+      if (match) clientId = match[1];
     }
+
+    // 2. BUSCAR EN SOUNDCLOUD API V2
+    const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${clientId}&limit=15`, {
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    const json = await scRes.json();
+    const tracks = json.collection || [];
+
+    // 3. MAPEAR RESULTADOS
+    const items = tracks
+      .filter((t: any) => t.duration > 30000) // Filtramos audios muy cortos (<30s)
+      .map((t: any) => ({
+        type: 'stream',
+        // Guardamos el ID de SoundCloud y el permalink para el audio
+        url: `/watch?v=sc:${t.id}`, 
+        title: t.title,
+        thumbnail: t.artwork_url ? t.artwork_url.replace('large', 't500x500') : '', // Mejor calidad
+        uploaderName: t.user?.username || 'SoundCloud',
+        duration: formatTime(t.duration / 1000), // SC da milisegundos
+        views: t.playback_count ? formatViews(t.playback_count) : '',
+        source: 'SoundCloud_Full'
+      }));
+
+    if (items.length > 0) return NextResponse.json(items);
+
   } catch (e) {
-    console.error("iTunes falló:", e);
+    console.error("SoundCloud error:", e);
   }
 
-  return NextResponse.json([]);
+  // --- RESPALDO (SI TODO FALLA, AL MENOS ITUNES) ---
+  try {
+    const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=5`);
+    const json = await res.json();
+    return NextResponse.json(json.results.map((song: any) => ({
+      type: 'stream',
+      url: `/watch?v=itunes:${song.trackId}`,
+      title: song.trackName,
+      thumbnail: song.artworkUrl100,
+      uploaderName: song.artistName,
+      source: 'iTunes_Preview'
+    })));
+  } catch(e) { return NextResponse.json([]); }
 }
 
 // Helpers
-function getImage(img: any) {
-  if (Array.isArray(img)) return img[img.length - 1]?.link || img[img.length - 1]?.url;
-  return typeof img === 'string' ? img : '';
+function formatTime(sec: number) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
-function decodeHtml(html: string) {
-  return html ? html.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'") : '';
+function formatViews(n: number) {
+  if (n > 1000000) return (n/1000000).toFixed(1) + 'M';
+  if (n > 1000) return (n/1000).toFixed(1) + 'K';
+  return n.toString();
 }

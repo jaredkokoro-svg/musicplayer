@@ -2,85 +2,75 @@ import { NextResponse } from 'next/server';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const id = searchParams.get('id');
+  const idRaw = searchParams.get('id');
 
-  if (!id) return NextResponse.json({ error: 'Falta ID' }, { status: 400 });
+  if (!idRaw) return NextResponse.json({ error: 'Falta ID' }, { status: 400 });
 
-  // CASO RESPALDO: Si es un ID de iTunes (preview)
-  if (id.startsWith('itunes:')) {
-    const realId = id.split(':')[1];
+  // CASO ITUNES (Preview 30s)
+  if (idRaw.startsWith('itunes:')) {
+    // ... (Mismo código de antes para iTunes) ...
+    const realId = idRaw.split(':')[1];
     try {
       const res = await fetch(`https://itunes.apple.com/lookup?id=${realId}`);
       const json = await res.json();
       const song = json.results?.[0];
-      if (song) {
-        return NextResponse.json({
-          url: song.previewUrl, // Solo 30seg, pero funciona 100% seguro
-          title: song.trackName,
-          uploader: song.artistName,
-          thumbnail: song.artworkUrl100
-        });
-      }
-    } catch (e) { return NextResponse.json({ error: 'iTunes Error' }, { status: 500 }); }
+      return NextResponse.json({
+        url: song.previewUrl,
+        title: song.trackName,
+        uploader: song.artistName,
+        thumbnail: song.artworkUrl100
+      });
+    } catch (e) { return NextResponse.json({ error: 'Error' }, { status: 500 }); }
   }
 
-  // CASO NORMAL: Saavn (Música completa)
-  const urls = [
-    `https://saavn.me/songs?id=${id}`,
-    `https://saavn.dev/api/songs/${id}`
-  ];
-
-  for (const url of urls) {
+  // CASO SOUNDCLOUD (Canción Completa)
+  if (idRaw.startsWith('sc:')) {
+    const trackId = idRaw.split(':')[1];
+    
     try {
-      const res = await fetch(url, {
-        cache: 'no-store',
-        // @ts-ignore
-        duplex: 'half',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-      });
-
-      if (!res.ok) continue;
-
-      const json = await res.json();
-      let song = json.data?.[0] || json.data;
-
-      if (!song) continue;
-
-      const links = song.downloadUrl || song.download_links;
-      let streamUrl = '';
-
-      if (Array.isArray(links)) {
-        // Intentamos calidad media (160) o alta (320)
-        const best = links.find((l: any) => l.quality === '160kbps') || links[links.length - 1];
-        streamUrl = typeof best === 'string' ? best : (best.url || best.link);
-      } else {
-        streamUrl = links;
+      // 1. Conseguir Client ID de nuevo (Vital para que no falle)
+      const homeRes = await fetch('https://soundcloud.com', { headers: { 'User-Agent': 'Mozilla/5.0' }});
+      const html = await homeRes.text();
+      const scriptSrc = html.match(/<script crossorigin src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+)">/)?.[1];
+      let clientId = '7K3O2f5l36p98r34a85b9';
+      if (scriptSrc) {
+        const jsRes = await fetch(scriptSrc);
+        const jsText = await jsRes.text();
+        const match = jsText.match(/client_id:"([^"]+)"/);
+        if (match) clientId = match[1];
       }
 
-      if (streamUrl) {
+      // 2. Obtener Info del Track
+      const trackRes = await fetch(`https://api-v2.soundcloud.com/tracks?ids=${trackId}&client_id=${clientId}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      const trackJson = await trackRes.json();
+      const track = trackJson[0];
+
+      if (!track) throw new Error('Track no encontrado');
+
+      // 3. Buscar el stream MP3 (Progressive)
+      // SoundCloud devuelve HLS y Progressive. Progressive es más fácil.
+      const transcoding = track.media.transcodings.find((t: any) => t.format.protocol === 'progressive');
+      
+      if (transcoding) {
+        const urlRes = await fetch(`${transcoding.url}?client_id=${clientId}`, {
+           headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        const urlJson = await urlRes.json();
+        
         return NextResponse.json({
-          url: streamUrl,
-          title: decodeHtml(song.name),
-          uploader: song.primaryArtists,
-          thumbnail: getImage(song.image)
+          url: urlJson.url, // ¡AQUÍ ESTÁ EL MP3!
+          title: track.title,
+          uploader: track.user.username,
+          thumbnail: track.artwork_url ? track.artwork_url.replace('large', 't500x500') : ''
         });
       }
 
     } catch (e) {
-      continue;
+      console.error(e);
     }
   }
 
   return NextResponse.json({ error: 'Audio no encontrado' }, { status: 500 });
-}
-
-function getImage(img: any) {
-  if (Array.isArray(img)) return img[img.length - 1]?.link || img[img.length - 1]?.url;
-  return img || '';
-}
-
-function decodeHtml(html: string) {
-  return html ? html.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'") : '';
 }
