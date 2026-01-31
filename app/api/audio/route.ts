@@ -1,14 +1,12 @@
 import { NextResponse } from 'next/server';
 
 const PIPED_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
-  'https://api.piped.io',
-  'https://pipedapi.drgns.space',
   'https://piped-api.garudalinux.org',
+  'https://pipedapi.drgns.space',
   'https://pa.il.ax',
   'https://p.euten.eu',
-  'https://api.piped.projectsegfau.lt',
-  'https://pipedapi.wglab.net'
+  'https://api.piped.io',
+  'https://pipedapi.kavin.rocks',
 ];
 
 export async function GET(request: Request) {
@@ -17,31 +15,22 @@ export async function GET(request: Request) {
 
   if (!idRaw) return NextResponse.json({ error: 'Falta ID' }, { status: 400 });
 
-  // CASO ITUNES
+  // Si por alguna razón llega un ID de iTunes viejo, lo ignoramos
   if (idRaw.startsWith('itunes:')) {
-    const realId = idRaw.split(':')[1];
-    try {
-      const res = await fetch(`https://itunes.apple.com/lookup?id=${realId}`);
-      const json = await res.json();
-      return NextResponse.json({
-        url: json.results?.[0]?.previewUrl,
-        title: json.results?.[0]?.trackName,
-        uploader: json.results?.[0]?.artistName,
-        thumbnail: json.results?.[0]?.artworkUrl100
-      });
-    } catch (e) { return NextResponse.json({ error: 'Error' }, { status: 500 }); }
+    return NextResponse.json({ error: 'iTunes deshabilitado' }, { status: 400 });
   }
 
-  // CASO PIPED (YouTube)
   for (const api of PIPED_INSTANCES) {
     try {
-      // Timeout un poco más largo para audio (4s)
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 4000);
 
       const res = await fetch(`${api}/streams/${idRaw}`, {
         signal: controller.signal,
-        cache: 'no-store'
+        cache: 'no-store',
+        headers: { 
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' 
+        }
       });
       clearTimeout(timeout);
 
@@ -49,8 +38,8 @@ export async function GET(request: Request) {
 
       const data = await res.json();
       
-      // Buscamos audio M4A (mejor compatibilidad web)
-      const audioStream = data.audioStreams.find((s: any) => s.quality === 'highest' && s.format === 'M4A') 
+      // Prioridad: M4A > WebM (M4A es nativo para Mac/Windows/Chrome)
+      const audioStream = data.audioStreams.find((s: any) => s.format === 'M4A' && s.quality === 'highest') 
                        || data.audioStreams.find((s: any) => s.format === 'M4A')
                        || data.audioStreams[0];
 
@@ -68,5 +57,5 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.json({ error: 'Audio no disponible en ningún servidor' }, { status: 500 });
+  return NextResponse.json({ error: 'Audio no encontrado' }, { status: 500 });
 }
