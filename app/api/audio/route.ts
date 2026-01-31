@@ -6,9 +6,8 @@ export async function GET(request: Request) {
 
   if (!idRaw) return NextResponse.json({ error: 'Falta ID' }, { status: 400 });
 
-  // CASO ITUNES (Preview 30s)
+  // 1. Manejo de iTunes (Respaldo)
   if (idRaw.startsWith('itunes:')) {
-    // ... (Mismo código de antes para iTunes) ...
     const realId = idRaw.split(':')[1];
     try {
       const res = await fetch(`https://itunes.apple.com/lookup?id=${realId}`);
@@ -20,57 +19,53 @@ export async function GET(request: Request) {
         uploader: song.artistName,
         thumbnail: song.artworkUrl100
       });
-    } catch (e) { return NextResponse.json({ error: 'Error' }, { status: 500 }); }
+    } catch (e) { return NextResponse.json({ error: 'iTunes Error' }, { status: 500 }); }
   }
 
-  // CASO SOUNDCLOUD (Canción Completa)
-  if (idRaw.startsWith('sc:')) {
-    const trackId = idRaw.split(':')[1];
-    
+  // 2. Manejo de YouTube/Invidious (Audio Completo)
+  // Probamos 3 instancias robustas en rotación
+  const INSTANCES = [
+    'https://invidious.fdn.fr',
+    'https://yewtu.be',
+    'https://inv.tux.pizza'
+  ];
+
+  for (const base of INSTANCES) {
     try {
-      // 1. Conseguir Client ID de nuevo (Vital para que no falle)
-      const homeRes = await fetch('https://soundcloud.com', { headers: { 'User-Agent': 'Mozilla/5.0' }});
-      const html = await homeRes.text();
-      const scriptSrc = html.match(/<script crossorigin src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+)">/)?.[1];
-      let clientId = '7K3O2f5l36p98r34a85b9';
-      if (scriptSrc) {
-        const jsRes = await fetch(scriptSrc);
-        const jsText = await jsRes.text();
-        const match = jsText.match(/client_id:"([^"]+)"/);
-        if (match) clientId = match[1];
+      // TRUCO: Endpoint "latest_version" con itag=140 (Audio M4A)
+      // fetch con redirect: 'manual' para leer la URL de destino sin descargar el archivo
+      const res = await fetch(`${base}/latest_version?id=${idRaw}&itag=140`, {
+        method: 'GET',
+        redirect: 'manual', // <--- IMPORTANTE: No seguir la redirección automáticamente
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
+      });
+
+      // Si nos da un 302 (Redirección), esa es la URL del audio real de Google
+      if (res.status === 302 || res.status === 301) {
+        const audioUrl = res.headers.get('location');
+        if (audioUrl) {
+          return NextResponse.json({
+            url: audioUrl, // Este es el link directo a googlevideo.com
+            title: 'Audio Stream',
+            uploader: 'Invidious Direct',
+            thumbnail: `https://i.ytimg.com/vi/${idRaw}/mqdefault.jpg`
+          });
+        }
       }
 
-      // 2. Obtener Info del Track
-      const trackRes = await fetch(`https://api-v2.soundcloud.com/tracks?ids=${trackId}&client_id=${clientId}`, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      const trackJson = await trackRes.json();
-      const track = trackJson[0];
-
-      if (!track) throw new Error('Track no encontrado');
-
-      // 3. Buscar el stream MP3 (Progressive)
-      // SoundCloud devuelve HLS y Progressive. Progressive es más fácil.
-      const transcoding = track.media.transcodings.find((t: any) => t.format.protocol === 'progressive');
-      
-      if (transcoding) {
-        const urlRes = await fetch(`${transcoding.url}?client_id=${clientId}`, {
-           headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        const urlJson = await urlRes.json();
-        
-        return NextResponse.json({
-          url: urlJson.url, // ¡AQUÍ ESTÁ EL MP3!
-          title: track.title,
-          uploader: track.user.username,
-          thumbnail: track.artwork_url ? track.artwork_url.replace('large', 't500x500') : ''
-        });
+      // Si no redirige pero devuelve OK, tal vez devolvió el archivo directo (raro pero posible)
+      if (res.ok) {
+         // En este caso, probablemente falló la estrategia de redirección manual
+         continue; 
       }
 
     } catch (e) {
-      console.error(e);
+      console.error(`Fallo instancia ${base}`, e);
+      continue;
     }
   }
 
-  return NextResponse.json({ error: 'Audio no encontrado' }, { status: 500 });
+  return NextResponse.json({ error: 'Audio no disponible' }, { status: 500 });
 }
