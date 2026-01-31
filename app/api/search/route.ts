@@ -1,57 +1,62 @@
 import { NextResponse } from 'next/server';
 
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',      // Clásico
+  'https://api.piped.io',              // Oficial
+  'https://pipedapi.drgns.space',      // Rápido
+  'https://piped-api.garudalinux.org', // Linux community (estable)
+  'https://pa.il.ax',                  // Mirror
+  'https://p.euten.eu',                // Europa
+  'https://api.piped.projectsegfau.lt',
+  'https://pipedapi.wglab.net'
+];
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('q');
   
   if (!query) return NextResponse.json([]);
 
-  // Usamos una instancia robusta de Invidious (Francia)
-  // Si esta falla, puedes cambiarla por 'https://yewtu.be'
-  const BASE_URL = 'https://invidious.fdn.fr';
-
-  try {
-    // 1. Pedimos la página web de búsqueda (HTML), NO la API
-    // Esto es más difícil de bloquear para ellos.
-    const res = await fetch(`${BASE_URL}/search?q=${encodeURIComponent(query)}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
-    });
-
-    const html = await res.text();
-
-    // 2. Usamos REGEX para extraer los videos del HTML
-    // Buscamos patrones: href="/watch?v=VIDEO_ID">TITULO</a>
-    const videoRegex = /<div class="h-box">[\s\S]*?href="\/watch\?v=([a-zA-Z0-9_-]{11})"[^>]*>([^<]+)<\/a>[\s\S]*?<b>([^<]+)<\/b>/g;
-    
-    const items = [];
-    let match;
-
-    // Iteramos sobre todas las coincidencias
-    while ((match = videoRegex.exec(html)) !== null) {
-      // match[1] = ID, match[2] = Titulo, match[3] = Autor
-      items.push({
-        type: 'stream',
-        url: `/watch?v=${match[1]}`, // ID de YouTube real
-        title: decodeHtml(match[2]),
-        thumbnail: `https://i.ytimg.com/vi/${match[1]}/mqdefault.jpg`,
-        uploaderName: match[3],
-        source: 'Inv_HTML_Scraper' // Para tu control
-      });
+  // 1. INTENTO CON PIPED (Rotación)
+  for (const api of PIPED_INSTANCES) {
+    try {
+      console.log(`Probando search en: ${api}`);
       
-      if (items.length >= 15) break;
+      // Timeout corto (2s) para pasar rápido al siguiente si falla
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      
+      const res = await fetch(`${api}/search?q=${encodeURIComponent(query)}&filter=music_songs`, {
+        signal: controller.signal,
+        cache: 'no-store',
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      const items = data.items;
+
+      if (items && items.length > 0) {
+        return NextResponse.json(items.map((item: any) => ({
+          type: 'stream',
+          url: `/watch?v=${item.url.split('v=')[1]}`, // Extraemos ID
+          title: item.title,
+          thumbnail: item.thumbnail,
+          uploaderName: item.uploaderName,
+          source: 'Piped_API'
+        })));
+      }
+
+    } catch (e) {
+      continue; // Si falla, siguiente servidor
     }
-
-    if (items.length > 0) return NextResponse.json(items);
-
-  } catch (e) {
-    console.error("HTML Scraper error:", e);
   }
 
-  // --- RESPALDO: iTunes (Solo si falla el scraper) ---
+  // 2. RESPALDO: iTunes (Si los 8 servidores de Piped fallan)
   try {
-    const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=5`);
+    const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=10`);
     const json = await res.json();
     return NextResponse.json(json.results.map((song: any) => ({
       type: 'stream',
@@ -62,13 +67,4 @@ export async function GET(request: Request) {
       source: 'iTunes_Preview'
     })));
   } catch(e) { return NextResponse.json([]); }
-}
-
-function decodeHtml(html: string) {
-  return html
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
 }
